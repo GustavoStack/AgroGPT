@@ -1,7 +1,10 @@
 import 'package:chat_gpt_sdk/chat_gpt_sdk.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash_chat_2/dash_chat_2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'login_page.dart';
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key});
@@ -12,11 +15,12 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final _openAI = OpenAI.instance.build(
-      token: dotenv.env['API_KEY'] ?? '',
-      baseOption: HttpSetup(
-        receiveTimeout: const Duration(seconds: 5),
-      ),
-      enableLog: true);
+    token: dotenv.env['OPEN_IA_API_KEY'] ?? '',
+    baseOption: HttpSetup(
+      receiveTimeout: const Duration(seconds: 5),
+    ),
+    enableLog: true,
+  );
 
   final ChatUser _user = ChatUser(
     id: '1',
@@ -31,32 +35,47 @@ class _ChatPageState extends State<ChatPage> {
   );
 
   List<ChatMessage> _messages = <ChatMessage>[];
-  List<ChatUser> _typingUsers = <ChatUser>[];
+  final List<ChatUser> _typingUsers = <ChatUser>[];
 
   @override
   void initState() {
     super.initState();
-    /*_messages.add(
-      ChatMessage(
-        text: 'Hey!',
-        user: _user,
-        createdAt: DateTime.now(),
-      ),
-    );*/
+    _checkUser();
+    _loadMessages();
+  }
+
+  void _checkUser() {
+    User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      Navigator.pushReplacement(
+          context, MaterialPageRoute(builder: (context) => const LoginPage()));
+    }
+  }
+
+  Future<void> _loadMessages() async {
+    final querySnapshot = await FirebaseFirestore.instance
+        .collection('messages')
+        .orderBy('createdAt', descending: true)
+        .get();
+    final messages = querySnapshot.docs.map((doc) {
+      final data = doc.data();
+      return ChatMessage(
+        text: data['text'],
+        user: data['userId'] == _user.id ? _user : _gptChatUser,
+        createdAt: data['createdAt'].toDate(),
+      );
+    }).toList();
+    setState(() {
+      _messages = messages;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor:
-          Colors.black, // Alterar a cor de fundo do Scaffold para preto
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        backgroundColor: const Color.fromRGBO(
-          0,
-          166,
-          126,
-          1,
-        ),
+        backgroundColor: const Color.fromRGBO(0, 166, 126, 1),
         title: const Text(
           'GPT Chat',
           style: TextStyle(
@@ -65,21 +84,16 @@ class _ChatPageState extends State<ChatPage> {
         ),
       ),
       body: Container(
-        color: const Color.fromARGB(
-            255, 59, 58, 58), // Definir a cor de fundo do DashChat
+        color: const Color.fromARGB(255, 59, 58, 58),
         child: DashChat(
           currentUser: _user,
           messageOptions: const MessageOptions(
             currentUserContainerColor: Colors.grey,
-            containerColor: Color.fromRGBO(
-              0,
-              166,
-              126,
-              1,
-            ),
+            containerColor: Color.fromRGBO(0, 166, 126, 1),
             textColor: Colors.white,
           ),
           onSend: (ChatMessage m) {
+            _sendMessage(m);
             getChatResponse(m);
           },
           messages: _messages,
@@ -89,9 +103,19 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  Future<void> getChatResponse(ChatMessage m) async {
+  Future<void> _sendMessage(ChatMessage m) async {
+    await FirebaseFirestore.instance.collection('messages').add({
+      'text': m.text,
+      'userId': m.user.id,
+      'createdAt': m.createdAt,
+    });
     setState(() {
       _messages.insert(0, m);
+    });
+  }
+
+  Future<void> getChatResponse(ChatMessage m) async {
+    setState(() {
       _typingUsers.add(_gptChatUser);
     });
     List<Map<String, dynamic>> messagesHistory =
@@ -110,13 +134,18 @@ class _ChatPageState extends State<ChatPage> {
     final response = await _openAI.onChatCompletion(request: request);
     for (var element in response!.choices) {
       if (element.message != null) {
+        final chatMessage = ChatMessage(
+          user: _gptChatUser,
+          createdAt: DateTime.now(),
+          text: element.message!.content,
+        );
+        await FirebaseFirestore.instance.collection('messages').add({
+          'text': chatMessage.text,
+          'userId': chatMessage.user.id,
+          'createdAt': chatMessage.createdAt,
+        });
         setState(() {
-          _messages.insert(
-              0,
-              ChatMessage(
-                  user: _gptChatUser,
-                  createdAt: DateTime.now(),
-                  text: element.message!.content));
+          _messages.insert(0, chatMessage);
         });
       }
     }
